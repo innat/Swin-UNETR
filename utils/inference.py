@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
+from typing import Sequence, Tuple, List
 from typing import Any, Callable, Sequence, Mapping, Optional, Tuple, Union
-
 
 def sliding_window_inference(
     inputs: tf.Tensor,
@@ -17,7 +17,7 @@ def sliding_window_inference(
     roi_weight_map: Optional[tf.Tensor] = None,
 ) -> tf.Tensor:
     """
-    Sliding window inference in Numpy, mimicking MONAI's implementation.
+    Sliding window inference in TensorFlow, mimicking MONAI's implementation.
 
     Args:
         inputs: Input tensor with shape (batch_size, *spatial_dims, channels).
@@ -58,7 +58,7 @@ def sliding_window_inference(
     pad_size = [[0, 0]] + pad_size + [[0, 0]]  # Add padding for batch and channel dimensions
 
     if any(p for pair in pad_size for p in pair):
-        inputs = np.pad(inputs, pad_size, mode=padding_mode.lower(), constant_values=cval)
+        inputs = tf.pad(inputs, pad_size, mode=padding_mode.upper(), constant_values=cval)
 
     # Compute scan intervals
     scan_interval = _get_scan_interval(image_size, roi_size, num_spatial_dims, overlap)
@@ -73,7 +73,7 @@ def sliding_window_inference(
             valid_patch_size, mode=mode, sigma_scale=sigma_scale, dtype=inputs.dtype
         )
         if len(importance_map.shape) == num_spatial_dims:
-            importance_map = np.expand_dims(np.expand_dims(importance_map, -1), 0)  # Add batch and channel dims
+            importance_map = tf.expand_dims(tf.expand_dims(importance_map, -1), 0)  # Add batch and channel dims
 
     # Initialize output and count maps as NumPy arrays
     output_shape = [batch_size] + list(image_size) + [num_classes]
@@ -88,7 +88,7 @@ def sliding_window_inference(
             full_slice = (slice(None),) + slice_idx + (slice(None),)
             patch = inputs[full_slice]
             patch_list.append(patch)
-        patches = np.concatenate(patch_list, axis=0)  # Stack patches along batch dimension
+        patches = tf.concat(patch_list, axis=0)  # Stack patches along batch dimension
 
         # Predict on the batch of patches
         pred = predictor(patches).numpy()  # Convert predictions to NumPy
@@ -97,9 +97,9 @@ def sliding_window_inference(
         if pred.shape[1:-1] != roi_size:  # Exclude batch and channel dimensions
             importance_map_resized = tf.image.resize(
                 importance_map, pred.shape[1:-1], method="nearest"
-                )
+                ).numpy()
         else:
-            importance_map_resized = importance_map
+            importance_map_resized = importance_map.numpy()
 
         # Accumulate predictions using NumPy
         for j, slice_idx in enumerate(batch_slices):
@@ -114,32 +114,17 @@ def sliding_window_inference(
     if any(p for pair in pad_size for p in pair):
         output_image = _crop_output(output_image, pad_size, image_size_)
 
-    return output_image
+    # Convert the final output back to a TensorFlow tensor
+    return tf.convert_to_tensor(output_image)
 
 
-def _crop_output(output: np.ndarray, pad_size: Sequence[Sequence[int]], original_size: Sequence[int]) -> np.ndarray:
-    """
-    Crop the output to remove padding.
-
-    Args:
-        output: Output array with shape (batch_size, *padded_size, channels).
-        pad_size: Padding applied to the input tensor.
-        original_size: Original spatial size of the input tensor.
-
-    Returns:
-        Cropped output array with shape (batch_size, *original_size, channels).
-    """
-    crop_slices = [slice(None)]  # Keep batch dimension
-    for i in range(len(original_size)):
-        start = pad_size[i + 1][0]  # Skip batch dimension
-        end = start + original_size[i]
-        crop_slices.append(slice(start, end))
-    crop_slices.append(slice(None))  # Keep channel dimension
-
-    # Convert the list of slices to a tuple for proper indexing
-    return output[tuple(crop_slices)]
-
-
+def ensure_tuple_rep(val: Any, rep: int) -> Tuple[Any, ...]:
+    """Ensure `val` is a tuple of length `rep`."""
+    if isinstance(val, (int, float)):
+        return (val,) * rep
+    if len(val) == rep:
+        return tuple(val)
+    raise ValueError(f"Length of `val` ({len(val)}) must match `rep` ({rep}).")
 
 def fall_back_tuple(val: Any, fallback: Sequence[int]) -> Tuple[int, ...]:
     """Ensure `val` is a tuple of the same length as `fallback`."""
@@ -150,7 +135,6 @@ def fall_back_tuple(val: Any, fallback: Sequence[int]) -> Tuple[int, ...]:
     if len(val) != len(fallback):
         raise ValueError(f"Length of `val` ({len(val)}) must match `fallback` ({len(fallback)}).")
     return tuple(val)
-
 
 def _get_scan_interval(
     image_size: Sequence[int], roi_size: Sequence[int], num_spatial_dims: int, overlap: Sequence[float]
@@ -165,13 +149,10 @@ def _get_scan_interval(
             scan_interval.append(interval if interval > 0 else 1)
     return tuple(scan_interval)
 
-
-from typing import Sequence, Tuple, List
-
 def dense_patch_slices(
-    image_size: Sequence[int],
-    patch_size: Sequence[int],
-    scan_interval: Sequence[int],
+    image_size: Sequence[int], 
+    patch_size: Sequence[int], 
+    scan_interval: Sequence[int], 
     return_slice: bool = True
 ) -> List[Tuple[slice, ...]]:
     num_spatial_dims = len(image_size)
@@ -237,21 +218,25 @@ def get_valid_patch_size(image_size: Sequence[int], patch_size: Sequence[int]) -
     """
     return tuple(min(p, i) for p, i in zip(patch_size, image_size))
 
-def ensure_tuple_size(t: Sequence[int], size: int) -> Tuple[int, ...]:
-    """
-    Ensure the input tuple has the specified size.
-    """
-    if len(t) == size:
-        return tuple(t)
-    elif len(t) < size:
-        return tuple(t) + (t[-1],) * (size - len(t))
-    else:
-        return tuple(t[:size])
 
-def ensure_tuple_rep(val: Any, rep: int) -> Tuple[Any, ...]:
-    """Ensure `val` is a tuple of length `rep`."""
-    if isinstance(val, (int, float)):
-        return (val,) * rep
-    if len(val) == rep:
-        return tuple(val)
-    raise ValueError(f"Length of `val` ({len(val)}) must match `rep` ({rep}).")
+def _crop_output(output: np.ndarray, pad_size: Sequence[Sequence[int]], original_size: Sequence[int]) -> np.ndarray:
+    """
+    Crop the output to remove padding.
+
+    Args:
+        output: Output array with shape (batch_size, *padded_size, channels).
+        pad_size: Padding applied to the input tensor.
+        original_size: Original spatial size of the input tensor.
+
+    Returns:
+        Cropped output array with shape (batch_size, *original_size, channels).
+    """
+    crop_slices = [slice(None)]  # Keep batch dimension
+    for i in range(len(original_size)):
+        start = pad_size[i + 1][0]  # Skip batch dimension
+        end = start + original_size[i]
+        crop_slices.append(slice(start, end))
+    crop_slices.append(slice(None))  # Keep channel dimension
+
+    # Convert the list of slices to a tuple for proper indexing
+    return output[tuple(crop_slices)]
